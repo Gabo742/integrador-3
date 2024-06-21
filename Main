@@ -1,0 +1,156 @@
+// UNAN MANAGUA
+// DEPARTAMENTO DE TECNOLOGIA
+// INGENIERIA ELECTRONICA
+// Proyecto integrdor 3
+// Alumnos:
+// Br. Elmer Gabriel Ortiz Alvarez
+// Br. Marvin Alenkart Soza
+// Br. Moises Abraham Alvarez Lumbi
+// Br. Franklin Aguilar
+// Br. Walter Narvaez
+ 
+ 
+ #include "soft_i2c_lcd.h"
+// Conextion del software I2C del LCD.
+sbit Soft_I2C_Scl at RD0_bit;
+sbit Soft_I2C_Sda at RD1_bit;
+sbit Soft_I2C_Scl_Direction at TRISD0_bit;
+sbit Soft_I2C_Sda_Direction at TRISD1_bit;
+
+// Conexion del sensor DHT22 en el puerto RE0
+sbit DHT22_PIN at RE0_bit;
+sbit DHT22_PIN_Direction at TRISE0_bit;
+
+// Variables
+char temperature[] = "Temp = 00.0 C"; //Vector de temperatura utilizado para imprimir la temperatura en el LCD.
+char humidity[] = "RH   = 00.0 %";    //Vector de humedad utilizado para imprimir la humedad en el LCD.
+unsigned short T_byte1, T_byte2, RH_byte1, RH_byte2, CheckSum; //  enteros de 16 bit utilizados por el sensor DHT22
+unsigned int Temp, RH; // enteros donde se va a almacenar la informacion enviada por el DHT22 dividida en Temp (temperatura) y RH (humedad relativa)
+
+// Funciones
+void Start_Signal(void) {   //Funcion para enviar la senal de inicio al DHT22
+  DHT22_PIN_Direction = 0;  // Configura el puerto como salida
+  DHT22_PIN = 0;            // Configura el puerto en low
+  delay_ms(25);             // Espera 25 ms
+  DHT22_PIN = 1;            // Configura el puerto en high
+  delay_us(35);             // Espera 30 us
+  DHT22_PIN_Direction = 1;  // Configure el puerto como entrada
+}
+
+unsigned short Check_Response() {
+  TMR1H = 0;                                  // Reinicia el Timer1
+  TMR1L = 0;
+  TMR1ON_bit = 1;                             // Habilita el modulo Timer1
+  while(!DHT22_PIN && TMR1L < 100);           // Espera que DHT22_PIN este en high
+  if(TMR1L > 99)                              // Si el tiempo de respuesta es mayor a 99µS hay un error de respuesta.
+    return 0;                                 // Regresa 0 (El dispositivo tiene problemas de respuesta)
+  else {    TMR1H = 0;                        // Reinicia el Timer1
+    TMR1L = 0;
+    while(DHT22_PIN && TMR1L < 100);          // Espera que DHT22_PIN este en lowW (valida dentro de los 80µs de respuesta en alto)
+    if(TMR1L > 99)                            // Si el tiempo de respuesta es mayor a 99µS hay un error de respuesta.
+      return 0;                               // Regresa 0 (El dispositivo tiene problemas de respuesta)
+    else
+      return 1;                               // Return 1 (OK)
+  }
+}
+
+unsigned short Read_Data(unsigned short* dht_data) { //Funcion para leer la informacion del sensor DHT22
+  short i;
+  *dht_data = 0;
+  for(i = 0; i < 8; i++){
+    TMR1H = 0;                                // Reinicia el Timer1
+    TMR1L = 0;
+    while(!DHT22_PIN)                         // Espera que DHT22_PIN este en high
+      if(TMR1L > 100) {                       // Si el tiempo en low es mayor a 100µs  ==>  Time out error (normalmente le toma 50µs)
+        return 1;                             // Retorna 1
+      }
+    TMR1H = 0;                                // Reinicia el Timer1
+    TMR1L = 0;
+    while(DHT22_PIN)                          // Espera que DHT22_PIN este en low
+      if(TMR1L > 100) {                       // Si el tiempo en high es mayor a 100µs  ==>  Time out error (Normalmente le toma 26-28µs para 0 y 70µs para 1)
+        return 1;                             // Retorna 1 (timeout error)
+      }
+     if(TMR1L > 50)                           // Si el tiempo en high es mayor a 50  ==>  El DHT22 envio 1
+       *dht_data |= (1 << (7 - i));           // Establece bit (7 - i)
+  }
+  return 0;                                   // Retorna 0 (data leida correctamente)
+}
+
+
+
+void main() {
+  // Configuracion
+  OSCCON = 0x70;  // Configura el oscilador en 8 MHz
+  ANSEL = 0;   // Configura los puertos como digital
+  T1CON = 0x10;  // El reloj interno de Timer1 configurado a relacion 1:2
+  TMR1H = 0;
+  TMR1L = 0;
+  TRISB.B1 = 0; //Configura el puerto RB1 como salida.
+
+  // Inicia el LCD I2C
+  I2C1_Init(100000);  // Inicia el modulo LCD I2C en 100 kHz
+  i2c_Lcd_Init(); //Inicia el modulo LCD
+  i2c_Lcd_Cmd(_LCD_CLEAR); //Limpia la pantalla del LCD
+  i2c_Lcd_Cmd(_LCD_CURSOR_OFF); //Desactiva el cursor del LCD
+
+  while (1) {
+    // Envia la senal de inicio al sensor
+    Start_Signal();
+
+    if(Check_Response()) {         // Valida si hay respuesta por parte del sensor (Si la respuesta es OK empieza a leer la informacion de temperatura y humedad)
+    // Lee y guarda la data del sensor DHT22 y valida si hay un error de time out.
+      if(Read_Data(&RH_byte1) || Read_Data(&RH_byte2) || Read_Data(&T_byte1) || Read_Data(&T_byte2) || Read_Data(&Checksum)) {
+        i2c_Lcd_Cmd(_LCD_CLEAR); //Limpia la pantalla
+        i2c_lcd_out(1, 5, "Time out!"); //Imprime timeout en la LCD
+      } else {                                               // Si no hay error de time out.
+        if(CheckSum == ((RH_Byte1 + RH_Byte2 + T_Byte1 + T_Byte2) & 0xFF)) { //Valida que la suma de los bits regresados por el DHT22 sea igual al CheckSum del mismo.
+        // Si no hay error al validar el checksum
+          RH = RH_byte1;
+          RH = (RH << 8) | RH_byte2;
+          Temp = T_byte1;
+          Temp = (Temp << 8) | T_byte2;
+          if (Temp > 0X8000){
+            temperature[6] = '-';
+            Temp = Temp & 0X7FFF;
+          }
+          else
+            temperature[6] = ' ';
+          temperature[7]  = (Temp / 100) % 10  + 48;
+          temperature[8]  = (Temp / 10) % 10  + 48;
+          temperature[10] = Temp % 10  + 48;
+          if(RH == 1000)                              // Si la humedad relativa = 100.0 %
+            humidity[6]  = 1 + 48;                    // Pone 1 centena en la posicion 7 del vector humedad.
+          else
+            humidity[6]  = ' ';                       // Pone espacio ' ' en la posicion 7 del vector humedad
+          humidity[7]  = (RH / 100) % 10 + 48;
+          humidity[8]  = (RH / 10) % 10 + 48;
+          humidity[10] = RH % 10 + 48;
+          temperature[11] = 223;                      // Pone el simbolo de grado (°)
+          i2c_lcd_out(1, 1, temperature);
+          i2c_lcd_out(2, 1, humidity);
+          if(RH > 800){     //Si la humedad relativa es mayor a 80.0%
+            PORTB.B1 = 1;   //Pone el puerto RB1 en alto encendiendo el rele
+          }
+          else
+              PORTB.B1 = 0; //Pone el puerto RB1 en bajo apagando el rele
+          }
+          // Si hay error de checksum
+        else {
+          i2c_Lcd_Cmd(_LCD_CLEAR);                        // Limpia la LCD
+          i2c_lcd_out(1, 1, "Checksum Error!"); //Imprime CheckSum error en la LCD.
+        }
+      }
+    }
+    // Si hay problema de respuesta
+    else {
+      i2c_Lcd_Cmd(_LCD_CLEAR);                 // Limpia la LCD
+      i2c_lcd_out(1, 3, "No response");        //Imprime "No response" en la fila 1
+      i2c_lcd_out(2, 1, "from the sensor");    //Imprime "From the sensor" en la fila 2
+    }
+
+    TMR1ON_bit = 0;                        // Deshabilita el modulo del timer 1
+    delay_ms(1000);                        // Espera 1 segundo
+
+  }
+}
+// Fin del codigo.
